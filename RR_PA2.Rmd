@@ -16,9 +16,6 @@ Across the United States, which types of events have the greatest economic conse
 Consider writing your report as if it were to be read by a government or municipal manager who might be responsible for preparing for severe weather events and will need to prioritize resources for different types of events. However, there is no need to make any specific recommendations in your report.
 
 
-
-Language: Your document should be written in English.
-
 Title: Your document should have a title that briefly summarizes your data analysis
 
 Synopsis: Immediately after the title, there should be a synopsis which describes and summarizes your analysis in at most 10 complete sentences.
@@ -44,4 +41,142 @@ download.file("https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.
 stormdat <- read.csv("StormData.csv.bz2")
 ```
 
+We know that different events started to be reported at different times, so it would be useful to have a column for the year.  I'm going to use the start date to define the year of the event.  
 
+```{r year}
+posixdate <- strptime(as.character(stormdat$BGN_DATE),format="%m/%d/%Y %H:%M:%S")
+stormdat$YEAR <- format(posixdate,"%Y")
+```
+
+### Multipliers for crop and property damage
+
+The data on crop and property damage has a separate multiplier code ending "EXP".  We know that K (and presumably k) means x10^3, M (m) means x10^6, and B means x10^9 (assuming US definition of "billion".) Where no multiplier is specified, we can assume that this is x1.  However, there are a number of other multipliers that are incompletely specified (e.g. ?, -, +, 0, 1, 2, 3, 4, 5, 6, 7, 8, h, H.)
+
+I am going to investigate how many of these there are, and what sort of values are associated with them.
+
+```{r summ}
+# economic consequences
+pdx <- stormdat$PROPDMGEXP
+pdoddexp <- which(pdx!="M" & pdx!="m" & pdx!="k" & pdx!="K" & pdx!="B" & pdx!="")
+cdx <- stormdat$CROPDMGEXP
+cdoddexp <- which(cdx!="M" & cdx!="m" & cdx!="k" & cdx!="K" & cdx!="B" & cdx!="")
+length(pdoddexp)
+length(cdoddexp)
+```
+
+### Filtering the dataset
+
+Since there are only a few of these undefined values, and there is no explanation of what they correspond to, I'm going to remove them from the analysis.
+
+I am also going to remove events with none of the outcomes of interest - i.e. zero fatalites, zero injuries, and zero crop and property damage
+
+```{r filterexp}
+toremovemult=unique(c(cdoddexp,pdoddexp))
+stormdat <- stormdat[-toremovemult,]
+
+noOutcomes <- which(stormdat$FATALITIES==0 & stormdat$INJURIES==0 
+                    & stormdat$CROPDMG==0 & stormdat$PROPDMG==0)
+stormdat <- stormdat[-noOutcomes,]
+  
+
+```
+
+### Creating a tidy data set
+
+I want a useful set of weather types, fatalities, injuries, crop damage, and property damage.  
+
+First, I will convert the crop and property damage values to take account of the exponentials.
+
+```{r multipliers}
+# multipliers for crop damage
+stormdat$MULTCROP <- stormdat$CROPDMG
+cropK <- which(stormdat$CROPDMGEXP=="k" | stormdat$CROPDMGEXP=="K")
+stormdat$MULTCROP[cropK] <- stormdat$MULTCROP[cropK]*1e3
+cropM <- which(stormdat$CROPDMGEXP=="m" | stormdat$CROPDMGEXP=="M")
+stormdat$MULTCROP[cropM] <- stormdat$MULTCROP[cropM]*1e6
+cropB <- which(stormdat$CROPDMGEXP=="B")
+stormdat$MULTCROP[cropB] <- stormdat$MULTCROP[cropB]*1e9
+
+# multipliers for property damage
+stormdat$MULTPROP <- stormdat$PROPDMG
+propK <- which(stormdat$PROPDMGEXP=="k" | stormdat$PROPDMGEXP=="K")
+stormdat$MULTPROP[propK] <- stormdat$MULTPROP[propK]*1e3
+propM <- which(stormdat$PROPDMGEXP=="m" | stormdat$PROPDMGEXP=="M")
+stormdat$MULTPROP[propM] <- stormdat$MULTPROP[propM]*1e6
+propB <- which(stormdat$PROPDMGEXP=="B")
+stormdat$MULTPROP[propB] <- stormdat$MULTPROP[propB]*1e9
+
+
+```
+
+Then I need to map the EVTYPE to more useful (generic) event descriptors.
+There isn't an obvious 1-1 mapping for this as some descriptors overlap (e.g. does THUNDERSTORM WINDS/HAIL come under thunderstorms, winds, or hail?)  I've therefore chosen to classify in the following order: 
+
+1. events which are effects of severe weather (e.g. flooding, fire)
+2. events which describe a weather system (e.g. thunderstorm)
+3. non-weather causative events (e.g. volcano, tides)
+4. type of precipitation (snow, hail etc)
+5. wind
+6. cloud
+6. temperature
+8. other events which cannot be easily classified as above (e.g. drowning, undefined "storm")
+
+```{r evtypes}
+f <- as.character(stormdat$EVTYPE)
+
+# new codes start with x to allow filtering at end for "other" category
+
+# effects of severe weather
+f[grep("flood|rising water",f,ignore.case=T)] <- "xFlood"
+f[grep("fire|smoke",f,ignore.case = T)] <- "xFire"
+f[grep("tsunami",f,ignore.case = T)] <- "xTsunami"
+ 
+# weather system
+f[grep("thunder|lightn|thuder|thudeer|thuner|lignt",ignore.case = T,f)] <- 
+  "xThunderstorm"
+f[grep("tornado|waterspout|dust devil|whirl|spout",f,ignore.case = T)] <- 
+  "xTornado"
+f[grep("^tstm|tropical|^ tstm|marine tstm|typhoon",f,ignore.case = T)] <- "xTropical storm"
+ 
+# not weather
+f[grep("volc",f,ignore.case = T)] <- "xVolcano"
+f[grep("tide|surf|seas$|current|swell",f,ignore.case = T)] <- "xSea conditions"
+ 
+# precipitation
+f[grep("snow|blizzard|avalan",f,ignore.case = T)] <- "xSnow"
+f[grep("hail",f,ignore.case = T)] <- "xHail"
+f[grep("sleet|rain|wet|drizz|precip",f,ignore.case = T)] <- "xRain/Sleet"
+
+# wind 
+f[grep("wind|hurricane|blow",f,ignore.case = T)] <- "xWind - other"
+
+# cloud
+f[grep("fog",f, ignore.case = T)] <- "xFog"
+
+# temperature
+f[grep("heat|warm|hyperthermia",f,ignore.case=T)] <- "xHigh temperature"
+f[grep("cold|freez|wint|ice|hypothermia|frost|icy",f,ignore.case = T)] <- 
+  "xLow temperature"
+
+# capture remaining that should have been classified
+f[grep("wave",f,ignore.case = T)] <- "xSea conditions"
+
+# everything else
+f[grep("^[a-w]|^[y-z]|\\?",f,ignore.case=T)] <- "xOther"
+
+f <- gsub("^x","",f)
+
+stormdat$EVENTCAT <- f
+
+```
+
+Now I can create my tidy data set for analysis.
+
+```{r tidy}
+tidydata <- with(stormdat,
+                 data.frame(EventType=EVENTCAT,Year=YEAR,Fatalities=FATALITIES,
+                            Injuries=INJURIES,CropDamage=MULTCROP,
+                            PropertyDamage=MULTPROP))
+```
+
+## Results

@@ -74,7 +74,6 @@ img {
 <p>Across the United States, which types of events (as indicated in the EVTYPE variable) are most harmful with respect to population health?</p>
 <p>Across the United States, which types of events have the greatest economic consequences?</p>
 <p>Consider writing your report as if it were to be read by a government or municipal manager who might be responsible for preparing for severe weather events and will need to prioritize resources for different types of events. However, there is no need to make any specific recommendations in your report.</p>
-<p>Language: Your document should be written in English.</p>
 <p>Title: Your document should have a title that briefly summarizes your data analysis</p>
 <p>Synopsis: Immediately after the title, there should be a synopsis which describes and summarizes your analysis in at most 10 complete sentences.</p>
 <p>There should be a section titled Data Processing which describes (in words and code) how the data were loaded into R and processed for analysis. In particular, your analysis must start from the raw CSV file containing the data. You cannot do any preprocessing outside the document. If preprocessing is time-consuming you may consider using the cache = TRUE option for certain code chunks.</p>
@@ -88,6 +87,94 @@ img {
 <p>The data is downloaded from the coursera website as a zipped csv file.</p>
 <pre class="r"><code>download.file(&quot;https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2&quot;,&quot;StormData.csv.bz2&quot;,method=&quot;curl&quot;)
 stormdat &lt;- read.csv(&quot;StormData.csv.bz2&quot;)</code></pre>
+<p>We know that different events started to be reported at different times, so it would be useful to have a column for the year. I’m going to use the start date to define the year of the event.</p>
+<pre class="r"><code>posixdate &lt;- strptime(as.character(stormdat$BGN_DATE),format=&quot;%m/%d/%Y %H:%M:%S&quot;)
+stormdat$YEAR &lt;- format(posixdate,&quot;%Y&quot;)</code></pre>
+<div id="multipliers-for-crop-and-property-damage" class="section level3">
+<h3>Multipliers for crop and property damage</h3>
+<p>The data on crop and property damage has a separate multiplier code ending “EXP”. We know that K (and presumably k) means x10^3, M (m) means x10^6, and B means x10^9 (assuming US definition of “billion”.) Where no multiplier is specified, we can assume that this is x1. However, there are a number of other multipliers that are incompletely specified (e.g. ?, -, +, 0, 1, 2, 3, 4, 5, 6, 7, 8, h, H.)</p>
+<p>I am going to investigate how many of these there are, and what sort of values are associated with them.</p>
+<pre class="r"><code># economic consequences
+pdx &lt;- stormdat$PROPDMGEXP
+pdoddexp &lt;- which(pdx!=&quot;M&quot; &amp; pdx!=&quot;m&quot; &amp; pdx!=&quot;k&quot; &amp; pdx!=&quot;K&quot; &amp; pdx!=&quot;B&quot; &amp; pdx!=&quot;&quot;)
+cdx &lt;- stormdat$CROPDMGEXP
+cdoddexp &lt;- which(cdx!=&quot;M&quot; &amp; cdx!=&quot;m&quot; &amp; cdx!=&quot;k&quot; &amp; cdx!=&quot;K&quot; &amp; cdx!=&quot;B&quot; &amp; cdx!=&quot;&quot;)
+length(pdoddexp)</code></pre>
+<pre><code>## [1] 321</code></pre>
+<pre class="r"><code>length(cdoddexp)</code></pre>
+<pre><code>## [1] 27</code></pre>
+</div>
+<div id="filtering-the-dataset" class="section level3">
+<h3>Filtering the dataset</h3>
+<p>Since there are only a few of these undefined values, and there is no explanation of what they correspond to, I’m going to remove them from the analysis.</p>
+<p>I am also going to remove events with none of the outcomes of interest - i.e. zero fatalites, zero injuries, and zero crop and property damage</p>
+<pre class="r"><code>toremovemult=unique(c(cdoddexp,pdoddexp))
+stormdat &lt;- stormdat[-toremovemult,]
+
+noOutcomes &lt;- which(stormdat$FATALITIES==0 &amp; stormdat$INJURIES==0 
+                    &amp; stormdat$CROPDMG==0 &amp; stormdat$PROPDMG==0)
+stormdat &lt;- stormdat[-noOutcomes,]</code></pre>
+</div>
+<div id="creating-a-tidy-data-set" class="section level3">
+<h3>Creating a tidy data set</h3>
+<p>I want a useful set of weather types, fatalities, injuries, crop damage, and property damage.</p>
+<p>First, I will convert the crop and property damage values to take account of the exponentials.</p>
+<pre class="r"><code># multipliers for crop damage
+stormdat$MULTCROP &lt;- stormdat$CROPDMG
+cropK &lt;- which(stormdat$CROPDMGEXP==&quot;k&quot; | stormdat$CROPDMGEXP==&quot;K&quot;)
+stormdat$MULTCROP[cropK] &lt;- stormdat$MULTCROP[cropK]*1e3
+cropM &lt;- which(stormdat$CROPDMGEXP==&quot;m&quot; | stormdat$CROPDMGEXP==&quot;M&quot;)
+stormdat$MULTCROP[cropM] &lt;- stormdat$MULTCROP[cropM]*1e6
+cropB &lt;- which(stormdat$CROPDMGEXP==&quot;B&quot;)
+stormdat$MULTCROP[cropB] &lt;- stormdat$MULTCROP[cropB]*1e9
+
+# multipliers for property damage
+stormdat$MULTPROP &lt;- stormdat$PROPDMG
+propK &lt;- which(stormdat$PROPDMGEXP==&quot;k&quot; | stormdat$PROPDMGEXP==&quot;K&quot;)
+stormdat$MULTPROP[propK] &lt;- stormdat$MULTPROP[propK]*1e3
+propM &lt;- which(stormdat$PROPDMGEXP==&quot;m&quot; | stormdat$PROPDMGEXP==&quot;M&quot;)
+stormdat$MULTPROP[propM] &lt;- stormdat$MULTPROP[propM]*1e6
+propB &lt;- which(stormdat$PROPDMGEXP==&quot;B&quot;)
+stormdat$MULTPROP[propB] &lt;- stormdat$MULTPROP[propB]*1e9</code></pre>
+<p>Then I need to map the EVTYPE to more useful (generic) event descriptors. There isn’t an obvious 1-1 mapping for this as some descriptors overlap (e.g. does THUNDERSTORM WINDS/HAIL come under thunderstorms, winds, or hail?) I’ve chosen to classify in the following order:</p>
+<ol style="list-style-type: decimal">
+<li>events which are effects of severe weather (e.g. flooding, fire)</li>
+<li>events which describe a weather system (e.g. thunderstorm)</li>
+<li>non-weather causative events (e.g. volcano, tides)</li>
+<li>type of precipitation (snow, hail etc)</li>
+<li>wind</li>
+</ol>
+<pre class="r"><code>e &lt;- levels(stormdat$EVTYPE)
+f &lt;- e
+
+# effects of severe weather
+f[grep(&quot;flood&quot;,f,ignore.case=T)] &lt;- &quot;Flood&quot;
+f[grep(&quot;fire&quot;,f,ignore.case = T)] &lt;- &quot;Fire&quot;
+f[grep(&quot;tsunami&quot;,f,ignore.case = T)] &lt;- &quot;Tsunami&quot;
+
+# weather system
+f[grep(&quot;thun|thud|tunder|lightn&quot;,ignore.case = T,f)] &lt;- &quot;Thunderstorm&quot;
+f[grep(&quot;tornado|waterspout|dust devil|whirl&quot;,f,ignore.case = T)] &lt;- &quot;Tornado&quot;
+f[grep(&quot;tropical|tstm&quot;,f,ignore.case = T)] &lt;- &quot;Tropical storm&quot;
+
+# not weather
+f[grep(&quot;volc&quot;,f,ignore.case = T)] &lt;- &quot;Volcano&quot;
+f[grep(&quot;tide|surf&quot;,f,ignore.case = T)] &lt;- &quot;Tide and surf&quot;
+
+# precipitation
+f[grep(&quot;sno|blizzard|avalan&quot;,f,ignore.case = T)] &lt;- &quot;Snow&quot;
+f[grep(&quot;hail&quot;,f,ignore.case = T)] &lt;- &quot;Hail&quot;
+f[grep(&quot;sleet|rain|wet&quot;,f,ignore.case = T)] &lt;- &quot;Rain/Sleet&quot;
+
+# wind 
+f[grep(&quot;wind|hurricane&quot;,f,ignore.case = T)] &lt;- &quot;Wind&quot;
+
+
+#ice</code></pre>
+</div>
+</div>
+<div id="results" class="section level2">
+<h2>Results</h2>
 </div>
 </div>
 
